@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/workspace
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////workspace/weather_trading.db
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: streamlit run app/dashboard/app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/workspace
+    depends_on:
+      - backend
+    environment:
+      - BACKEND_URL=http://backend:8000
