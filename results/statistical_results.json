@@ -1,20 +1,19 @@
 {
-  "generated_at": "2026-07-04T16:39:23.202037Z",
-  "llm_mode": "live-openrouter",
+  "generated_at": "2026-07-04T19:26:21.507314Z",
+  "llm_mode": "deterministic-fallback",
   "apify_enabled": true,
   "capital": {
     "starting_balance": 10000.0,
-    "final_portfolio_value": 11684.9,
-    "total_return_pct": 16.85,
-    "unrealized_pnl": 1684.9,
-    "total_capital_deployed": 8000.0
+    "final_portfolio_value": 12337.05,
+    "total_return_pct": 23.37,
+    "unrealized_pnl": 2337.05,
+    "total_capital_deployed": 9960.83
   },
   "coverage": {
     "cities_supported": 20,
-    "cities_traded": 20,
+    "cities_traded": 19,
     "traded_city_names": [
       "Amsterdam",
-      "Bangkok",
       "Berlin",
       "Chicago",
       "Delhi",
@@ -34,23 +33,24 @@
       "Tokyo",
       "Toronto"
     ],
-    "markets_tracked": 40
+    "markets_tracked": 41
   },
   "activity": {
-    "predictions_made": 40,
-    "orders_executed": 40,
-    "open_positions": 40,
+    "predictions_made": 41,
+    "orders_executed": 38,
+    "open_positions": 38,
     "decision_distribution": {
-      "BUY YES": 40
+      "BUY YES": 29,
+      "BUY NO": 12
     },
-    "avg_model_edge_pct": 36.0,
-    "avg_model_confidence": 0.7,
-    "avg_execution_slippage_pct": 0.248
+    "avg_model_edge_pct": 31.65,
+    "avg_model_confidence": 0.741,
+    "avg_execution_slippage_pct": 0.25
   },
   "risk_adjusted_metrics": {
-    "sharpe_ratio": 10.8402,
+    "sharpe_ratio": 22.0909,
     "sortino_ratio": 0.0,
-    "max_drawdown_pct": 0.2,
+    "max_drawdown_pct": 2.98,
     "daily_return_samples": 3
   }
 }

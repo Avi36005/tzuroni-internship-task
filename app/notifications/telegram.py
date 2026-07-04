@@ -9,8 +9,10 @@ class TelegramNotifier:
     """Notifier for sending trade alerts and portfolio updates to a Telegram channel/chat"""
     
     def __init__(self, token: Optional[str] = None, chat_id: Optional[str] = None, client: Optional[httpx.AsyncClient] = None):
-        self.token = token or settings.telegram_token
-        self.chat_id = chat_id or settings.telegram_chat_id
+        # Only fall back to settings when the argument is omitted (None); an explicit
+        # empty string means "no credentials" and must disable sending.
+        self.token = token if token is not None else settings.telegram_token
+        self.chat_id = chat_id if chat_id is not None else settings.telegram_chat_id
         self.client = client or httpx.AsyncClient(timeout=10.0)
 
     async def send_message(self, message: str) -> bool:

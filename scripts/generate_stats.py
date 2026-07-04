@@ -21,6 +21,7 @@ from sqlalchemy import select
 from app.database.db import init_db, async_session
 from app.database.models import City, Market, Prediction, Order, Position, PortfolioState
 from app.agents.supervisor import SupervisorAgent
+from app.agents.base import llm_configured, hermes_active, resolve_llm_config
 from app.config.settings import settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -71,9 +72,17 @@ async def collect_statistics(session) -> dict:
     supervisor = SupervisorAgent()
     stats = await supervisor.portfolio_agent.manager.calculate_portfolio_statistics(session)
 
+    _, _, _, provider = resolve_llm_config()
+    if not llm_configured():
+        llm_mode = "deterministic-fallback"
+    elif hermes_active():
+        llm_mode = f"hermes-agent ({provider})"
+    else:
+        llm_mode = f"direct ({provider})"
+
     return {
         "generated_at": datetime.utcnow().isoformat() + "Z",
-        "llm_mode": "live-openrouter" if settings.openrouter_api_key not in ("", "mock_key") else "deterministic-fallback",
+        "llm_mode": llm_mode,
         "apify_enabled": bool(settings.apify_token),
         "capital": {
             "starting_balance": round(starting_balance, 2),

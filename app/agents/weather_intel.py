@@ -25,7 +25,7 @@ class WeatherIntelAgent(BaseAgent):
 
     async def analyze_city(self, city_name: str, lat: float, lon: float) -> Dict[str, Any]:
         """Fetch weather details using Apify scraper, falling back to Open-Meteo forecast"""
-        apify_data = await self.apify.scrape_weather(city_name)
+        apify_data = await self.apify.scrape_weather(city_name, lat=lat, lon=lon)
         
         forecast = None
         if apify_data:

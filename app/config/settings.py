@@ -3,9 +3,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 class Settings(BaseSettings):
-    # API credentials
+    # LLM API credentials & provider configuration
     openrouter_api_key: str = Field(default="mock_key", validation_alias="OPENROUTER_API_KEY")
+    groq_api_key: str = Field(default="", validation_alias="GROQ_API_KEY")
     llm_model: str = Field(default="google/gemini-2.5-flash", validation_alias="LLM_MODEL")
+    # Optional explicit overrides; when unset the provider is auto-selected (Groq > OpenRouter).
+    llm_base_url: str = Field(default="", validation_alias="LLM_BASE_URL")
+    # Use the Nous Research Hermes Agent framework as the reasoning backend when available.
+    use_hermes: bool = Field(default=True, validation_alias="USE_HERMES")
+
     apify_token: str = Field(default="", validation_alias="APIFY_TOKEN")
     
     # Database

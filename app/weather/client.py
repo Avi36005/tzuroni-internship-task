@@ -258,68 +258,128 @@ class BrightSkyClient:
             return None
 
 
-class ApifyWeatherClient:
-    """Client for Apify Weather Scrapers (e.g. oneary/weather-database-scraper)"""
+# WMO weather interpretation codes -> a baseline precipitation probability (%).
+# Used to derive a rain probability when the Apify actor reports a weather code and
+# precipitation amount but no explicit probability field.
+_WMO_RAIN_PROBABILITY = {
+    0: 5, 1: 10, 2: 20, 3: 30,        # clear -> overcast
+    45: 25, 48: 25,                    # fog
+    51: 55, 53: 60, 55: 70,           # drizzle
+    56: 60, 57: 65,                   # freezing drizzle
+    61: 70, 63: 80, 65: 90,           # rain
+    66: 75, 67: 85,                   # freezing rain
+    71: 60, 73: 65, 75: 70, 77: 55,   # snow
+    80: 75, 81: 85, 82: 95,           # rain showers
+    85: 65, 86: 75,                   # snow showers
+    95: 90, 96: 92, 99: 95,           # thunderstorm
+}
 
-    # The two weather actors referenced in the assignment's Data Sources section.
-    # We try them in order and return the first that yields data.
-    ACTOR_CANDIDATES = [
-        ("oneary~weather-database-scraper", {"locations": ["{city}"], "units": "metric", "timeFrame": "ten_day"}),
-        ("apify~weather-api", {"location": "{city}", "units": "metric"}),
-    ]
+
+class ApifyWeatherClient:
+    """
+    Client for Apify weather scraping (assignment "apify - for data scraping" requirement).
+
+    Uses the `cloud9_ai/open-meteo-scraper` actor, which runs on Apify infrastructure and
+    returns structured daily forecast records. The scraped data is normalised into the same
+    Open-Meteo `daily` shape used elsewhere in the pipeline, so the Weather Intel agent and
+    prediction model can consume Apify-scraped forecasts transparently.
+
+    Note: the actor named in the assignment PDF (`oneary/weather-database-scraper`) is
+    currently broken at the publisher's side (its own main.js fails to compile), and the
+    `apify/weather-api` slug does not resolve, so this working store actor is used instead.
+    """
+
+    ACTOR_ID = "cloud9_ai~open-meteo-scraper"
 
     def __init__(self, token: Optional[str] = None, client: Optional[httpx.AsyncClient] = None):
-        self.token = token or settings.apify_token
-        self.client = client or httpx.AsyncClient(timeout=60.0)
+        # Only fall back to settings when the token is omitted (None); an explicit empty
+        # string means "no token" and must disable scraping.
+        self.token = token if token is not None else settings.apify_token
+        self.client = client or httpx.AsyncClient(timeout=90.0)
 
-    async def scrape_weather(self, city_name: str) -> Optional[Dict[str, Any]]:
-        """Scrape weather details for a city, trying each configured Apify actor in turn."""
+    async def scrape_weather(
+        self,
+        city_name: str,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+        forecast_days: int = 10,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Scrape a daily forecast for a city via Apify and return it in Open-Meteo `daily` format.
+        Coordinates are required by the actor; without them the scrape is skipped.
+        """
         if not self.token:
             logger.warning("Apify API token not configured. Skipping Apify scraper.")
             return None
+        if lat is None or lon is None:
+            logger.info(f"Apify scraper needs coordinates for {city_name}; skipping.")
+            return None
 
-        for actor_id, payload_template in self.ACTOR_CANDIDATES:
-            payload = self._render_payload(payload_template, city_name)
-            result = await self._run_actor(actor_id, payload, city_name)
-            if result is not None:
-                result.setdefault("_apify_actor", actor_id)
-                return result
+        payload = {
+            "mode": "forecast",
+            "locations": [{"name": city_name, "latitude": lat, "longitude": lon}],
+            "forecastDays": forecast_days,
+            "granularity": "daily",
+            "temperatureUnit": "celsius",
+        }
 
-        logger.warning(f"All Apify actors failed to return data for {city_name}.")
-        return None
+        records = await self._run_actor(payload, city_name)
+        if not records:
+            logger.warning(f"Apify actor returned no data for {city_name}.")
+            return None
 
-    @staticmethod
-    def _render_payload(template: Dict[str, Any], city_name: str) -> Dict[str, Any]:
-        """Substitute the {city} placeholder into an actor payload template."""
-        rendered: Dict[str, Any] = {}
-        for key, value in template.items():
-            if isinstance(value, list):
-                rendered[key] = [v.replace("{city}", city_name) if isinstance(v, str) else v for v in value]
-            elif isinstance(value, str):
-                rendered[key] = value.replace("{city}", city_name)
-            else:
-                rendered[key] = value
-        return rendered
+        return self._to_open_meteo_daily(records)
 
-    async def _run_actor(self, actor_id: str, payload: Dict[str, Any], city_name: str) -> Optional[Dict[str, Any]]:
-        """Run a single Apify actor synchronously and return its first dataset item."""
-        url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
+    async def _run_actor(self, payload: Dict[str, Any], city_name: str) -> Optional[List[Dict[str, Any]]]:
+        """Run the Apify actor synchronously and return the raw list of daily dataset items."""
+        url = f"https://api.apify.com/v2/acts/{self.ACTOR_ID}/run-sync-get-dataset-items"
         params = {"token": self.token}
         try:
-            logger.info(f"Running Apify actor '{actor_id}' for {city_name}")
+            logger.info(f"Running Apify actor '{self.ACTOR_ID}' for {city_name}")
             response = await self.client.post(url, json=payload, params=params)
             if response.status_code in (200, 201):
-                dataset_items = response.json()
-                if isinstance(dataset_items, list) and dataset_items:
-                    logger.info(f"Apify actor '{actor_id}' returned {len(dataset_items)} items for {city_name}")
-                    return dataset_items[0]
-                if isinstance(dataset_items, dict) and dataset_items:
-                    return dataset_items
-                logger.info(f"Apify actor '{actor_id}' returned no items for {city_name}")
+                items = response.json()
+                if isinstance(items, list) and items:
+                    logger.info(f"Apify actor returned {len(items)} daily records for {city_name}")
+                    return items
                 return None
-            logger.error(f"Apify actor '{actor_id}' returned status {response.status_code}: {response.text[:200]}")
+            logger.error(f"Apify actor returned status {response.status_code}: {response.text[:200]}")
             return None
         except Exception as e:
-            logger.error(f"Error executing Apify actor '{actor_id}': {e}", exc_info=True)
+            logger.error(f"Error executing Apify actor: {e}", exc_info=True)
             return None
+
+    @staticmethod
+    def _to_open_meteo_daily(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Convert cloud9_ai/open-meteo-scraper daily records into the Open-Meteo `daily` schema.
+        Rain probability is derived from the WMO weather code and precipitation amount, since
+        the actor does not report an explicit probability field.
+        """
+        times, tmax, tmin, precip, precip_prob, wind = [], [], [], [], [], []
+        for r in records:
+            times.append(r.get("date"))
+            tmax.append(r.get("temperatureMax"))
+            tmin.append(r.get("temperatureMin"))
+            p = r.get("precipitation")
+            precip.append(p)
+            wind.append(r.get("windSpeedMax"))
+
+            code = r.get("weatherCode")
+            base = _WMO_RAIN_PROBABILITY.get(code, 20 if code is not None else 15)
+            if p is not None and p > 0:
+                base = max(base, min(95, 50 + p * 8))  # observed precip lifts the probability
+            precip_prob.append(round(float(base), 1))
+
+        return {
+            "_source": "apify:cloud9_ai/open-meteo-scraper",
+            "daily": {
+                "time": times,
+                "temperature_2m_max": tmax,
+                "temperature_2m_min": tmin,
+                "precipitation_sum": precip,
+                "precipitation_probability_max": precip_prob,
+                "wind_speed_10m_max": wind,
+            },
+        }
 
