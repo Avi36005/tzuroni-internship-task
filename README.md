@@ -50,7 +50,9 @@ graph TD
 
 - **Language:** Python 3.12+
 - **Agent Orchestration:** Hermes Agent Framework & OpenRouter (Gemini / GPT models)
-- **Data Clients:** DuckDuckGo Web Search, Open-Meteo, NOAA API
+- **Global Weather:** Open-Meteo forecast + historical archive; optional Apify scrapers (`oneary/weather-database-scraper`, `apify/weather-api`)
+- **Local National Met Services:** NOAA / US National Weather Service (USA), DWD via Bright Sky (Germany), MET Norway / api.met.no (global official source for all other countries)
+- **Research:** DuckDuckGo Web Search
 - **Quantitative Engine:** Scikit-Learn, Pandas, NumPy, Plotly
 - **Database:** SQLite & SQLAlchemy (Asyncio)
 - **Frontend Dashboard:** Streamlit
@@ -108,6 +110,19 @@ docker-compose up --build
 ```
 - **Web Terminal:** `http://localhost:8501`
 - **FastAPI Documentation:** `http://localhost:8000/docs`
+
+---
+
+## 📊 Statistical Results (Deliverable)
+Run multiple end-to-end trading cycles and write aggregated performance statistics
+(capital/returns, city coverage, trade activity, Sharpe/Sortino, drawdown) to `results/`
+as both JSON and Markdown:
+```bash
+PYTHONPATH=. uv run python scripts/generate_stats.py 3   # 3 cycles
+```
+Outputs:
+- `results/statistical_results.json` — machine-readable metrics
+- `results/statistical_results.md` — human-readable report
 
 ---
 

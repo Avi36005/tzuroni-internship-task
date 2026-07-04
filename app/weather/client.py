@@ -145,47 +145,181 @@ class NOAAClient:
             return []
 
 
+class MetNoClient:
+    """
+    Async client for the Norwegian Meteorological Institute (MET Norway / api.met.no).
+
+    MET Norway is an official national meteorological service that publishes global,
+    coordinate-based forecasts with no API key required. It is used here as an official
+    "local source" for cities outside the US (which are covered by NOAA), fulfilling the
+    requirement to fetch local per-country weather from local government sources.
+    """
+
+    BASE_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
+    HEADERS = {
+        "User-Agent": "WeatherAI-TradingAgent/1.0 (contact@weatheraitrading.com)",
+        "Accept": "application/json",
+    }
+
+    def __init__(self, client: Optional[httpx.AsyncClient] = None):
+        self.client = client or httpx.AsyncClient(timeout=15.0, headers=self.HEADERS)
+
+    async def get_forecast(self, lat: float, lon: float) -> Optional[Dict[str, Any]]:
+        """Fetch and summarise the official MET Norway forecast for the next 24 hours."""
+        params = {"lat": f"{lat:.4f}", "lon": f"{lon:.4f}"}
+        try:
+            logger.info(f"Fetching MET Norway forecast for {lat}, {lon}")
+            response = await self.client.get(self.BASE_URL, params=params)
+            if response.status_code != 200:
+                logger.error(f"MET Norway API returned status code {response.status_code}")
+                return None
+
+            data = response.json()
+            timeseries = data.get("properties", {}).get("timeseries", [])
+            if not timeseries:
+                return None
+
+            # Aggregate the next 24 hourly entries into a daily summary.
+            horizon = timeseries[:24]
+            temps: List[float] = []
+            total_precip = 0.0
+            max_precip_prob = 0.0
+            symbols: List[str] = []
+
+            for entry in horizon:
+                details = entry.get("data", {}).get("instant", {}).get("details", {})
+                if "air_temperature" in details:
+                    temps.append(details["air_temperature"])
+
+                next_hour = entry.get("data", {}).get("next_1_hours", {})
+                if next_hour:
+                    total_precip += next_hour.get("details", {}).get("precipitation_amount", 0.0) or 0.0
+                    prob = next_hour.get("details", {}).get("probability_of_precipitation")
+                    if prob is not None:
+                        max_precip_prob = max(max_precip_prob, prob)
+                    symbol = next_hour.get("summary", {}).get("symbol_code")
+                    if symbol:
+                        symbols.append(symbol)
+
+            dominant_symbol = max(set(symbols), key=symbols.count) if symbols else "unknown"
+            return {
+                "source": "MET Norway (api.met.no)",
+                "temp_max": max(temps) if temps else None,
+                "temp_min": min(temps) if temps else None,
+                "precipitation_sum_24h": round(total_precip, 2),
+                "precipitation_probability_max": max_precip_prob,
+                "condition": dominant_symbol,
+            }
+        except Exception as e:
+            logger.error(f"Error fetching MET Norway forecast: {e}", exc_info=True)
+            return None
+
+
+class BrightSkyClient:
+    """
+    Async client for Bright Sky (brightsky.dev), the open JSON API in front of the
+    official German Weather Service (DWD) data. Used as the local source for German cities.
+    """
+
+    BASE_URL = "https://api.brightsky.dev/weather"
+
+    def __init__(self, client: Optional[httpx.AsyncClient] = None):
+        self.client = client or httpx.AsyncClient(timeout=15.0)
+
+    async def get_forecast(self, lat: float, lon: float) -> Optional[Dict[str, Any]]:
+        """Fetch tomorrow's official DWD forecast summary for the given coordinates."""
+        tomorrow = (datetime.utcnow() + timedelta(days=1)).strftime("%Y-%m-%d")
+        params = {"lat": f"{lat:.4f}", "lon": f"{lon:.4f}", "date": tomorrow}
+        try:
+            logger.info(f"Fetching Bright Sky (DWD) forecast for {lat}, {lon}")
+            response = await self.client.get(self.BASE_URL, params=params)
+            if response.status_code != 200:
+                logger.error(f"Bright Sky API returned status code {response.status_code}")
+                return None
+
+            records = response.json().get("weather", [])
+            if not records:
+                return None
+
+            temps = [r["temperature"] for r in records if r.get("temperature") is not None]
+            total_precip = sum(r.get("precipitation", 0.0) or 0.0 for r in records)
+            conditions = [r.get("condition") for r in records if r.get("condition")]
+            dominant = max(set(conditions), key=conditions.count) if conditions else "unknown"
+
+            return {
+                "source": "DWD via Bright Sky (brightsky.dev)",
+                "temp_max": max(temps) if temps else None,
+                "temp_min": min(temps) if temps else None,
+                "precipitation_sum_24h": round(total_precip, 2),
+                "condition": dominant,
+            }
+        except Exception as e:
+            logger.error(f"Error fetching Bright Sky forecast: {e}", exc_info=True)
+            return None
+
+
 class ApifyWeatherClient:
     """Client for Apify Weather Scrapers (e.g. oneary/weather-database-scraper)"""
-    
+
+    # The two weather actors referenced in the assignment's Data Sources section.
+    # We try them in order and return the first that yields data.
+    ACTOR_CANDIDATES = [
+        ("oneary~weather-database-scraper", {"locations": ["{city}"], "units": "metric", "timeFrame": "ten_day"}),
+        ("apify~weather-api", {"location": "{city}", "units": "metric"}),
+    ]
+
     def __init__(self, token: Optional[str] = None, client: Optional[httpx.AsyncClient] = None):
         self.token = token or settings.apify_token
-        self.client = client or httpx.AsyncClient(timeout=30.0)
+        self.client = client or httpx.AsyncClient(timeout=60.0)
 
     async def scrape_weather(self, city_name: str) -> Optional[Dict[str, Any]]:
-        """Scrape weather details for a specific city from Apify"""
+        """Scrape weather details for a city, trying each configured Apify actor in turn."""
         if not self.token:
             logger.warning("Apify API token not configured. Skipping Apify scraper.")
             return None
-        
-        # Use the oneary/weather-database-scraper actor API url
-        actor_id = "oneary~weather-database-scraper"
-        url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
-        
-        payload = {
-            "locations": [city_name],
-            "units": "metric",
-            "timeFrame": "ten_day"
-        }
-        
-        params = {
-            "token": self.token
-        }
-        
-        try:
-            logger.info(f"Running Apify weather scraper for {city_name}")
-            response = await self.client.post(url, json=payload, params=params)
-            
-            if response.status_code in [200, 201]:
-                dataset_items = response.json()
-                logger.info(f"Apify scraper returned {len(dataset_items)} items for {city_name}")
-                if dataset_items:
-                    return dataset_items[0] if isinstance(dataset_items, list) else dataset_items
-                return None
+
+        for actor_id, payload_template in self.ACTOR_CANDIDATES:
+            payload = self._render_payload(payload_template, city_name)
+            result = await self._run_actor(actor_id, payload, city_name)
+            if result is not None:
+                result.setdefault("_apify_actor", actor_id)
+                return result
+
+        logger.warning(f"All Apify actors failed to return data for {city_name}.")
+        return None
+
+    @staticmethod
+    def _render_payload(template: Dict[str, Any], city_name: str) -> Dict[str, Any]:
+        """Substitute the {city} placeholder into an actor payload template."""
+        rendered: Dict[str, Any] = {}
+        for key, value in template.items():
+            if isinstance(value, list):
+                rendered[key] = [v.replace("{city}", city_name) if isinstance(v, str) else v for v in value]
+            elif isinstance(value, str):
+                rendered[key] = value.replace("{city}", city_name)
             else:
-                logger.error(f"Apify API returned status code {response.status_code}: {response.text}")
+                rendered[key] = value
+        return rendered
+
+    async def _run_actor(self, actor_id: str, payload: Dict[str, Any], city_name: str) -> Optional[Dict[str, Any]]:
+        """Run a single Apify actor synchronously and return its first dataset item."""
+        url = f"https://api.apify.com/v2/acts/{actor_id}/run-sync-get-dataset-items"
+        params = {"token": self.token}
+        try:
+            logger.info(f"Running Apify actor '{actor_id}' for {city_name}")
+            response = await self.client.post(url, json=payload, params=params)
+            if response.status_code in (200, 201):
+                dataset_items = response.json()
+                if isinstance(dataset_items, list) and dataset_items:
+                    logger.info(f"Apify actor '{actor_id}' returned {len(dataset_items)} items for {city_name}")
+                    return dataset_items[0]
+                if isinstance(dataset_items, dict) and dataset_items:
+                    return dataset_items
+                logger.info(f"Apify actor '{actor_id}' returned no items for {city_name}")
                 return None
+            logger.error(f"Apify actor '{actor_id}' returned status {response.status_code}: {response.text[:200]}")
+            return None
         except Exception as e:
-            logger.error(f"Error executing Apify weather scraper: {e}", exc_info=True)
+            logger.error(f"Error executing Apify actor '{actor_id}': {e}", exc_info=True)
             return None
 

@@ -33,24 +33,17 @@ class PredictionAgent(BaseAgent):
         research_summary: str,
         sentiment_score: float,
         market: Dict[str, Any],
-        climatology_prior: float
+        climatology_prior: float,
+        forecast_prob: Optional[float] = None
     ) -> Dict[str, Any]:
         """Combine all inputs, compute quantitative metrics, and return LLM-supported trade decision"""
         market_price = market["yes_price"]
         market_title = market["title"]
-        
-        # 1. Fetch forecast probability if available
-        # Simple extraction or use default from summaries
-        forecast_prob = None
-        if "precipitation_probability_max" in weather_summary.lower() or "prob" in weather_summary.lower():
-            # A placeholder to look for probability in string, but we can also parse weather_summary
-            pass
-            
-        # 2. Run Python ML model pipeline to get mathematical probability
-        # Assume a forecast probability of rain (we extract it in supervisor, but let's pass a default if not found)
-        # We will parse this out, let's say it's 50% if not found.
-        parsed_forecast = 50.0
-        
+
+        # Use the real meteorological rain probability (%) from the Weather Intel agent.
+        # If unavailable, the model falls back to the climatological prior internally.
+        parsed_forecast = forecast_prob
+
         # Run quantitative model
         model_prob, confidence, explanation = self.model.predict(
             climatology_prior=climatology_prior,
@@ -105,32 +98,39 @@ class PredictionAgent(BaseAgent):
         )
         
         response = await self.chat(prompt)
-        
+
+        # The Python quantitative model is the authoritative source for the probability,
+        # edge, EV and trade decision — these are computed from real per-city forecast,
+        # climatology and market data. The LLM contributes qualitative reasoning only, and
+        # may (optionally) veto a trade to "NO TRADE" if it flags a strong contradicting
+        # signal. This prevents a canned or hallucinated LLM JSON from silently overriding
+        # the quant decision with a uniform output.
+        reasoning = explanation
+        decision = math_decision
+
         try:
             start = response.find("{")
             end = response.rfind("}") + 1
             if start != -1 and end != -1:
                 json_data = json.loads(response[start:end])
-                return {
-                    "success": True,
-                    "probability_yes": float(json_data.get("probability", model_prob)),
-                    "probability_no": 1.0 - float(json_data.get("probability", model_prob)),
-                    "confidence": float(json_data.get("confidence", confidence)),
-                    "decision": json_data.get("decision", math_decision),
-                    "edge": float(json_data.get("edge", best_edge)),
-                    "expected_value": float(json_data.get("expected_value", best_ev)),
-                    "reasoning": json_data.get("reasoning", explanation)
-                }
+                if json_data.get("reasoning"):
+                    reasoning = json_data["reasoning"]
+                # Allow the LLM to veto (de-risk) but never to manufacture a new trade.
+                if json_data.get("decision") == "NO TRADE":
+                    decision = "NO TRADE"
         except Exception as e:
-            logger.warning(f"PredictionAgent failed to parse JSON response. Output: {response}. Error: {e}")
-            
+            logger.warning(f"PredictionAgent could not parse LLM narrative JSON; using quant reasoning. Error: {e}")
+
+        if decision == "NO TRADE":
+            best_edge, best_ev = 0.0, 0.0
+
         return {
             "success": True,
             "probability_yes": model_prob,
             "probability_no": 1.0 - model_prob,
             "confidence": confidence,
-            "decision": math_decision,
+            "decision": decision,
             "edge": best_edge,
             "expected_value": best_ev,
-            "reasoning": explanation
+            "reasoning": reasoning
         }

@@ -1,0 +1,56 @@
+{
+  "generated_at": "2026-07-04T16:39:23.202037Z",
+  "llm_mode": "live-openrouter",
+  "apify_enabled": true,
+  "capital": {
+    "starting_balance": 10000.0,
+    "final_portfolio_value": 11684.9,
+    "total_return_pct": 16.85,
+    "unrealized_pnl": 1684.9,
+    "total_capital_deployed": 8000.0
+  },
+  "coverage": {
+    "cities_supported": 20,
+    "cities_traded": 20,
+    "traded_city_names": [
+      "Amsterdam",
+      "Bangkok",
+      "Berlin",
+      "Chicago",
+      "Delhi",
+      "Dubai",
+      "Hong Kong",
+      "London",
+      "Los Angeles",
+      "Madrid",
+      "Melbourne",
+      "Mumbai",
+      "New York",
+      "Paris",
+      "Rome",
+      "Seoul",
+      "Singapore",
+      "Sydney",
+      "Tokyo",
+      "Toronto"
+    ],
+    "markets_tracked": 40
+  },
+  "activity": {
+    "predictions_made": 40,
+    "orders_executed": 40,
+    "open_positions": 40,
+    "decision_distribution": {
+      "BUY YES": 40
+    },
+    "avg_model_edge_pct": 36.0,
+    "avg_model_confidence": 0.7,
+    "avg_execution_slippage_pct": 0.248
+  },
+  "risk_adjusted_metrics": {
+    "sharpe_ratio": 10.8402,
+    "sortino_ratio": 0.0,
+    "max_drawdown_pct": 0.2,
+    "daily_return_samples": 3
+  }
+}

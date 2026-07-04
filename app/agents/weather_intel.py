@@ -43,9 +43,10 @@ class WeatherIntelAgent(BaseAgent):
             return {
                 "success": False,
                 "summary": "Weather forecast unavailable.",
-                "forecast_raw": {}
+                "forecast_raw": {},
+                "forecast_precip_probability": None
             }
-            
+
         daily = forecast["daily"]
         # Format a prompt with the daily forecast data
         prompt = (
@@ -62,10 +63,20 @@ class WeatherIntelAgent(BaseAgent):
         )
         
         analysis = await self.chat(prompt)
-        
+
+        # Extract tomorrow's rain probability so downstream agents use the real forecast
+        # rather than a hardcoded value. Index 0 is today, index 1 is tomorrow.
+        precip_probs = daily.get("precipitation_probability_max") or []
+        forecast_prob: Optional[float] = None
+        if len(precip_probs) > 1 and precip_probs[1] is not None:
+            forecast_prob = float(precip_probs[1])
+        elif len(precip_probs) > 0 and precip_probs[0] is not None:
+            forecast_prob = float(precip_probs[0])
+
         return {
             "success": True,
             "summary": analysis,
-            "forecast_raw": forecast
+            "forecast_raw": forecast,
+            "forecast_precip_probability": forecast_prob
         }
 

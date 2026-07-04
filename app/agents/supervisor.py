@@ -204,7 +204,8 @@ class SupervisorAgent:
                 research_summary=research_res["summary"],
                 sentiment_score=research_res["sentiment_score"],
                 market=market_dict_list[0],
-                climatology_prior=climatology_prior
+                climatology_prior=climatology_prior,
+                forecast_prob=weather_res.get("forecast_precip_probability")
             )
             
             # Save Prediction to DB
