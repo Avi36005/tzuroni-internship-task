@@ -89,17 +89,30 @@ Execute a complete workflow cycle (seeding, prediction, risk sizing, trade place
 PYTHONPATH=. uv run python scripts/run_demo.py
 ```
 
-### 3. Launch the Professional Web Dashboard
-Start the FastAPI backend server:
+### 3. Launch the Full Web App (one command)
+Start the FastAPI backend **and** the Streamlit dashboard together:
 ```bash
-PYTHONPATH=. uv run python app/main.py
+./run.sh
+# or:  PYTHONPATH=. uv run python scripts/run_app.py
 ```
+Open `http://localhost:8501`, then go to **"Settings & Terminal Control" → "🚀 Trigger Agent Cycle"**
+to run the entire multi-agent workflow and watch trades, predictions, risk and portfolio
+update live in the browser. Press `Ctrl+C` in the terminal to stop both services.
 
-In a separate terminal, start the Streamlit UI terminal:
+<details>
+<summary>Or run the two services manually</summary>
+
 ```bash
-uv run streamlit run app/dashboard/app.py
+PYTHONPATH=. uv run python app/main.py            # FastAPI backend (port 8000)
+uv run streamlit run app/dashboard/app.py         # Streamlit UI (port 8501)
 ```
-Open your browser at `http://localhost:8501` to access the trading terminal.
+</details>
+
+### 4. Interactive Telegram Bot (optional)
+Chat with the agent from Telegram (`/status`, `/portfolio`, `/predictions`, `/trades`, `/run`):
+```bash
+PYTHONPATH=. uv run python scripts/run_bot.py
+```
 
 ---
 
