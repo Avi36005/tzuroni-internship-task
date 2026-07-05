@@ -69,6 +69,20 @@ def trigger_agent_run():
 # Sidebar Navigation
 st.sidebar.title("⛈️ Weather Quant AI")
 st.sidebar.markdown("*Bloomberg Terminal for Weather Prediction Markets*")
+
+# Quick-access control: trigger a full multi-agent workflow cycle from any page.
+if st.sidebar.button("🚀 Trigger Agent Cycle", use_container_width=True, type="primary"):
+    with st.spinner("Supervisor agent coordinating specialist workflows… please wait."):
+        res = trigger_agent_run()
+    if res and res.get("success"):
+        st.sidebar.success(
+            f"✅ Cycle complete — Trades: {res.get('trades_executed')}, "
+            f"Hedges: {res.get('hedges_executed')}, Value: ${res.get('portfolio_value'):.2f}"
+        )
+        st.balloons()
+    else:
+        st.sidebar.error(f"❌ {res.get('message') if res else 'Unknown error'}")
+
 st.sidebar.markdown("---")
 
 menu = st.sidebar.radio(
@@ -80,7 +94,6 @@ menu = st.sidebar.radio(
         "AI Predictions & Edge",
         "Risk Management",
         "Portfolio & Statistics",
-        "Research Reports",
         "Trade History",
         "Settings & Terminal Control"
     ]
@@ -406,25 +419,7 @@ if backend_live:
             st.info("Portfolio metrics could not be loaded.")
 
     # ----------------------------------------------------
-    # Page 7: Research Reports
-    # ----------------------------------------------------
-    elif menu == "Research Reports":
-        st.title("📰 News, Alerts & Social Sentiment Research")
-        
-        # Display latest news research records
-        st.subheader("AI Summaries & Search Sentiment Tracker")
-        preds = get_data("/predictions") or []
-        
-        if preds:
-            for i, p in enumerate(preds[:5]):
-                st.info(f"**News Sentiment Analysis ({p['prediction_date']})**")
-                st.write(p["reasoning"])
-                st.write("---")
-        else:
-            st.info("No research reports logged yet. Trigger the supervisor agent to perform research.")
-
-    # ----------------------------------------------------
-    # Page 8: Trade History
+    # Page 7: Trade History
     # ----------------------------------------------------
     elif menu == "Trade History":
         st.title("📜 Transaction Audit Log")
