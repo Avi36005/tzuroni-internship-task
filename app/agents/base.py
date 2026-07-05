@@ -108,7 +108,7 @@ class BaseAgent:
         api_key, base_url, model, provider = resolve_llm_config()
         self.api_key = api_key
         self.base_url = base_url
-        self.model = model
+        self.llm_model = model
         self.provider = provider
 
         if api_key is None:
@@ -158,10 +158,10 @@ class BaseAgent:
 
     async def _chat_direct(self, prompt: str, sys_prompt: str, api_key: str) -> str:
         """Direct OpenAI-compatible completion (Groq / OpenRouter) with the given key."""
-        logger.info(f"Agent [{self.name}] querying {self.provider} ({self.model})")
+        logger.info(f"Agent [{self.name}] querying {self.provider} ({self.llm_model})")
         client = AsyncOpenAI(base_url=self.base_url, api_key=api_key)
         response = await client.chat.completions.create(
-            model=self.model,
+            model=self.llm_model,
             messages=[
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": prompt},
@@ -187,7 +187,7 @@ class BaseAgent:
                 base_url=self.base_url,
                 api_key=api_key,
                 provider="openai",
-                model=self.model,
+                model=self.llm_model,
                 quiet_mode=True,
                 skip_memory=True,
                 skip_context_files=True,
@@ -198,7 +198,7 @@ class BaseAgent:
             )
             return agent.chat(prompt)
 
-        logger.info(f"Agent [{self.name}] querying Hermes Agent ({self.model} via {self.provider})")
+        logger.info(f"Agent [{self.name}] querying Hermes Agent ({self.llm_model} via {self.provider})")
         output = await asyncio.to_thread(_run)
         logger.info(f"Agent [{self.name}] received Hermes response successfully.")
         return output
