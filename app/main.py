@@ -205,6 +205,84 @@ async def get_predictions(session: AsyncSession = Depends(get_db_session)):
         })
     return output
 
+@app.get("/markets/source")
+async def get_markets_source():
+    """Report whether the real Polymarket API is currently reachable (live) or geoblocked."""
+    import httpx
+    from app.config.settings import settings as cfg
+
+    proxy = cfg.polymarket_proxy or None
+    live = False
+    try:
+        async with httpx.AsyncClient(timeout=4.0, proxy=proxy, follow_redirects=True) as c:
+            r = await c.get("https://gamma-api.polymarket.com/markets", params={"limit": 1})
+            live = r.status_code == 200
+    except Exception:
+        live = False
+    return {
+        "polymarket_live": live,
+        "proxy_configured": bool(proxy),
+        "allow_simulated": cfg.allow_simulated_markets,
+    }
+
+
+@app.get("/model/performance")
+async def get_model_performance(session: AsyncSession = Depends(get_db_session)):
+    """
+    Compute real prediction-model performance (Brier, F1, precision, recall) by comparing
+    model probabilities against actual weather outcomes for expired/settled contracts.
+    Uses real historical weather from Open-Meteo — no hardcoded numbers.
+    """
+    import re
+    from datetime import datetime
+    from app.prediction.model import WeatherPredictionModel
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    preds = (await session.execute(select(Prediction))).scalars().all()
+
+    probs, outcomes = [], []
+    for p in preds:
+        market = (
+            await session.execute(select(Market).where(Market.id == p.market_id))
+        ).scalar_one_or_none()
+        if not market or market.expiration_date > today:
+            continue  # not settled yet
+
+        city = (
+            await session.execute(select(City).where(City.id == market.city_id))
+        ).scalar_one_or_none()
+        if not city:
+            continue
+
+        archive = await supervisor.open_meteo.get_historical_climatology(
+            city.latitude, city.longitude, market.expiration_date, market.expiration_date
+        )
+        if not archive or "daily" not in archive:
+            continue
+        daily = archive["daily"]
+
+        actual_yes = 0
+        if "exceed" in market.title.lower():
+            temps = daily.get("temperature_2m_max", [])
+            match = re.search(r"exceed (\d+(\.\d+)?)", market.title.lower())
+            if match and temps and temps[0] is not None:
+                actual_yes = 1 if temps[0] > float(match.group(1)) else 0
+        else:
+            precip = daily.get("precipitation_sum", [])
+            if precip and precip[0] is not None:
+                actual_yes = 1 if precip[0] > 0.1 else 0
+
+        probs.append(p.model_probability_yes)
+        outcomes.append(actual_yes)
+
+    if not probs:
+        return {"settled_count": 0}
+
+    metrics = WeatherPredictionModel().evaluate_model_performance(probs, outcomes)
+    metrics["settled_count"] = len(probs)
+    return metrics
+
+
 @app.get("/cities")
 async def get_supported_cities(session: AsyncSession = Depends(get_db_session)):
     """Fetch the list of 20 supported cities with their agencies and coordinates"""

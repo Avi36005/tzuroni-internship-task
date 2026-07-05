@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     
     # Database
     database_url: str = Field(default="sqlite+aiosqlite:///weather_trading.db", validation_alias="DATABASE_URL")
+
+    # Polymarket access. Polymarket geoblocks several regions; set a proxy (e.g. a VPN's
+    # HTTP/SOCKS proxy URL) to reach the real API. When the real API is unreachable and
+    # allow_simulated_markets is False, the system trades no markets rather than fabricating them.
+    polymarket_proxy: str = Field(default="", validation_alias="POLYMARKET_PROXY")
+    allow_simulated_markets: bool = Field(default=True, validation_alias="ALLOW_SIMULATED_MARKETS")
     
     # Portfolio and sizing
     starting_balance: float = Field(default=10000.0, validation_alias="STARTING_BALANCE")

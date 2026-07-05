@@ -254,9 +254,17 @@ if backend_live:
     # ----------------------------------------------------
     elif menu == "Prediction Markets":
         st.title("⚖️ Prediction Markets (Polymarket)")
-        
-        # For simulation view or live view
-        # We can extract markets currently saved in the database
+
+        market_src = get_data("/markets/source") or {}
+        if market_src.get("polymarket_live"):
+            st.success("🟢 Live Polymarket data — real market odds from the Gamma API.")
+        else:
+            st.warning(
+                "🟡 Polymarket is geoblocked from this network, so market **odds** are "
+                "simulated (anchored to real Open-Meteo forecasts). All weather, local-agency, "
+                "research and LLM data is real. Set `POLYMARKET_PROXY` (a VPN/proxy) for live odds."
+            )
+
         st.subheader("Active Weather Outcome Contracts")
         
         # Connect to SQLite markets
@@ -372,19 +380,28 @@ if backend_live:
             with col4:
                 st.metric("Total Revalued Value", f"${stats.get('current_portfolio_value', 10000.0):.2f}")
                 
-            # Additional ML metrics
+            # Additional ML metrics — computed from real settled contract outcomes only.
             st.subheader("🎯 Statistical Prediction Performance (Model Audit)")
-            st.markdown(
-                "Below are prediction validation metrics evaluating our probability calibration against real weather outcomes."
-            )
-            
-            m_col1, m_col2, m_col3 = st.columns(3)
-            with m_col1:
-                st.metric("Brier Score", "0.1852", help="Closer to 0 is better. Measures probability calibration accuracy.")
-            with m_col2:
-                st.metric("F1 Score", "0.7250", help="Balance of Precision and Recall.")
-            with m_col3:
-                st.metric("Directional Accuracy (Win Rate)", f"{stats.get('win_rate', 0.0):.1%}")
+            perf = get_data("/model/performance") or {}
+            if perf.get("settled_count", 0) > 0:
+                st.markdown(
+                    f"Prediction validation on **{perf['settled_count']} settled contracts** "
+                    "(model probability vs. actual weather outcomes)."
+                )
+                m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+                with m_col1:
+                    st.metric("Brier Score", f"{perf['brier_score']:.4f}", help="Closer to 0 is better.")
+                with m_col2:
+                    st.metric("F1 Score", f"{perf['f1_score']:.4f}", help="Balance of Precision and Recall.")
+                with m_col3:
+                    st.metric("Precision", f"{perf['precision']:.4f}")
+                with m_col4:
+                    st.metric("Recall", f"{perf['recall']:.4f}")
+            else:
+                st.info(
+                    "🕓 Model-audit metrics (Brier, F1, Precision, Recall) are computed from "
+                    "real settled contract outcomes and will appear once markets have resolved."
+                )
         else:
             st.info("Portfolio metrics could not be loaded.")
 

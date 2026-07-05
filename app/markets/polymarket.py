@@ -1,3 +1,4 @@
+import json
 import logging
 import random
 import httpx
@@ -8,74 +9,118 @@ from app.weather.client import OpenMeteoClient
 
 logger = logging.getLogger(__name__)
 
+# Keywords used to identify weather-related markets in the live Polymarket feed.
+_WEATHER_KEYWORDS = ("weather", "rain", "temperature", "snow", "degrees", "°", "hottest", "warmest")
+
+
 class PolymarketClient:
     """
     Client for interacting with Polymarket weather markets.
-    Supports a live client that falls back to a high-fidelity simulator when geoblocked.
+
+    Fetches real markets from the Polymarket Gamma API. Polymarket geoblocks several
+    regions; set POLYMARKET_PROXY (a VPN/HTTP proxy URL) to reach the real API from a
+    blocked location. When the real API is unreachable:
+      - if ALLOW_SIMULATED_MARKETS is True (default), a forecast-anchored simulator is
+        used so paper trading can still be demonstrated (markets tagged is_simulated=True);
+      - if False, no markets are returned (strict real-data-only mode).
     """
-    
+
     GAMMA_URL = "https://gamma-api.polymarket.com"
-    
+
     def __init__(self, client: Optional[httpx.AsyncClient] = None, open_meteo: Optional[OpenMeteoClient] = None):
-        self.client = client or httpx.AsyncClient(timeout=10.0)
-        self.open_meteo = open_meteo or OpenMeteoClient(self.client)
+        proxy = settings.polymarket_proxy or None
+        self.client = client or httpx.AsyncClient(timeout=15.0, proxy=proxy, follow_redirects=True)
+        self.open_meteo = open_meteo or OpenMeteoClient()
         self.is_simulated = False
 
     async def get_active_markets(self, cities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Fetch active weather markets from Polymarket.
-        If geoblocked or API call fails, switch to Simulation Mode using live weather forecasts.
-        """
-        if self.is_simulated:
-            return await self._generate_simulated_markets(cities)
-            
-        try:
-            logger.info("Attempting to fetch active weather markets from Polymarket Gamma API")
-            # Query Gamma API public-search for weather markets
-            response = await self.client.get(
-                f"{self.GAMMA_URL}/public-search", 
-                params={"q": "weather", "active": "true"}
+        """Fetch real active weather markets from Polymarket, honouring the real-only policy."""
+        real_markets = await self._fetch_live_markets()
+        if real_markets is not None:
+            self.is_simulated = False
+            logger.info(f"Loaded {len(real_markets)} live Polymarket weather markets.")
+            return real_markets
+
+        # Real API unreachable.
+        if not settings.allow_simulated_markets:
+            logger.warning(
+                "Polymarket unreachable and ALLOW_SIMULATED_MARKETS=false: "
+                "returning no markets (strict real-data-only mode)."
             )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if len(data) > 0:
-                    markets = []
-                    for m in data:
-                        # Extract and format matching Polymarket schema
-                        outcomes = m.get("outcomes", ["YES", "NO"])
-                        prices = m.get("outcomePrices", ["0.5", "0.5"])
-                        
-                        yes_price = float(prices[0]) if len(prices) > 0 else 0.5
-                        no_price = float(prices[1]) if len(prices) > 1 else 0.5
-                        
-                        markets.append({
-                            "title": m.get("title"),
-                            "slug": m.get("slug"),
-                            "condition_id": m.get("conditionId"),
-                            "clob_token_id_yes": m.get("clobTokenIds", [None])[0] if m.get("clobTokenIds") else None,
-                            "clob_token_id_no": m.get("clobTokenIds", [None, None])[1] if m.get("clobTokenIds") and len(m.get("clobTokenIds")) > 1 else None,
-                            "yes_price": yes_price,
-                            "no_price": no_price,
-                            "implied_probability": yes_price,
-                            "volume": float(m.get("volume", 1000.0)),
-                            "liquidity": float(m.get("liquidity", 500.0)),
-                            "spread": max(0.01, abs(1.0 - (yes_price + no_price))),
-                            "expiration_date": m.get("endDate", (datetime.utcnow() + timedelta(days=2)).strftime("%Y-%m-%d")),
-                            "is_active": True
-                        })
-                    logger.info(f"Successfully loaded {len(markets)} live Polymarket markets.")
-                    return markets
-            
-            # If not 200, trigger simulated fallback
-            logger.warning(f"Polymarket API returned status code {response.status_code}. Activating Simulation Mode.")
-            self.is_simulated = True
-            return await self._generate_simulated_markets(cities)
-            
+            self.is_simulated = False
+            return []
+
+        logger.warning(
+            "Polymarket API unreachable (region likely geoblocked). Using forecast-anchored "
+            "simulator; markets are tagged is_simulated=True. Set POLYMARKET_PROXY to use real data."
+        )
+        self.is_simulated = True
+        return await self._generate_simulated_markets(cities)
+
+    async def _fetch_live_markets(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Query the Gamma API for real active weather markets.
+        Returns a list on success (possibly empty), or None if the API is unreachable.
+        """
+        try:
+            logger.info("Fetching active weather markets from Polymarket Gamma API")
+            response = await self.client.get(
+                f"{self.GAMMA_URL}/markets",
+                params={"active": "true", "closed": "false", "limit": 500},
+            )
+            if response.status_code != 200:
+                logger.warning(f"Polymarket Gamma API returned status {response.status_code}.")
+                return None
+
+            data = response.json()
+            records = data if isinstance(data, list) else data.get("data", [])
+            markets = []
+            for m in records:
+                title = (m.get("question") or m.get("title") or "")
+                if not any(kw in title.lower() for kw in _WEATHER_KEYWORDS):
+                    continue
+
+                prices = self._as_list(m.get("outcomePrices"))
+                tokens = self._as_list(m.get("clobTokenIds"))
+                yes_price = float(prices[0]) if len(prices) > 0 else 0.5
+                no_price = float(prices[1]) if len(prices) > 1 else round(1.0 - yes_price, 4)
+
+                markets.append({
+                    "title": title,
+                    "slug": m.get("slug"),
+                    "condition_id": m.get("conditionId"),
+                    "clob_token_id_yes": tokens[0] if len(tokens) > 0 else None,
+                    "clob_token_id_no": tokens[1] if len(tokens) > 1 else None,
+                    "yes_price": yes_price,
+                    "no_price": no_price,
+                    "implied_probability": yes_price,
+                    "volume": float(m.get("volume") or 0.0),
+                    "liquidity": float(m.get("liquidity") or 0.0),
+                    "spread": float(m.get("spread") or max(0.01, abs(1.0 - (yes_price + no_price)))),
+                    "expiration_date": (m.get("endDate") or "")[:10] or
+                        (datetime.utcnow() + timedelta(days=2)).strftime("%Y-%m-%d"),
+                    "is_active": True,
+                    "is_simulated": False,
+                })
+            return markets
         except Exception as e:
-            logger.warning(f"Failed to connect to Polymarket API (likely geoblocked): {e}. Activating Simulation Mode.")
-            self.is_simulated = True
-            return await self._generate_simulated_markets(cities)
+            logger.warning(f"Could not reach Polymarket API (likely geoblocked): {e}")
+            return None
+
+    @staticmethod
+    def _as_list(value: Any) -> List[Any]:
+        """Gamma returns outcomePrices / clobTokenIds as JSON-encoded strings or arrays."""
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                return parsed if isinstance(parsed, list) else [parsed]
+            except Exception:
+                return []
+        return []
 
     async def _generate_simulated_markets(self, cities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -126,9 +171,10 @@ class PolymarketClient:
                 "liquidity": round(random.uniform(2000.0, 15000.0), 2),
                 "spread": round(spread, 3),
                 "expiration_date": tomorrow,
-                "is_active": True
+                "is_active": True,
+                "is_simulated": True
             })
-            
+
             # 2. Temperature Market Simulation (e.g. will exceed 30°C/86°F or historical average)
             temp_max = 22.0  # default prior
             if forecast and "daily" in forecast and "temperature_2m_max" in forecast["daily"]:
@@ -163,7 +209,8 @@ class PolymarketClient:
                 "liquidity": round(random.uniform(1000.0, 10000.0), 2),
                 "spread": round(random.uniform(0.01, 0.04), 3),
                 "expiration_date": tomorrow,
-                "is_active": True
+                "is_active": True,
+                "is_simulated": True
             })
-            
+
         return markets
