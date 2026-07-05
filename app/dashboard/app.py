@@ -56,13 +56,15 @@ def get_data(endpoint: str):
     except Exception:
         return None
 
-def trigger_agent_run():
-    """Trigger the Supervisor Agent workflow run"""
+def trigger_agent_run(max_cities=None):
+    """Trigger the Supervisor Agent workflow run (optionally limited to N cities)."""
     try:
-        r = requests.post(f"{API_URL}/run-workflow")
+        params = {"max_cities": max_cities} if max_cities else {}
+        # Cycles can take a while on free-tier LLMs; allow a generous timeout.
+        r = requests.post(f"{API_URL}/run-workflow", params=params, timeout=900)
         if r.status_code == 200:
             return r.json()
-        return {"success": False, "message": "Failed to run agent loop."}
+        return {"success": False, "message": f"Backend returned {r.status_code}."}
     except Exception as e:
         return {"success": False, "message": str(e)}
 
@@ -70,10 +72,13 @@ def trigger_agent_run():
 st.sidebar.title("⛈️ Weather Quant AI")
 st.sidebar.markdown("*Bloomberg Terminal for Weather Prediction Markets*")
 
-# Quick-access control: trigger a full multi-agent workflow cycle from any page.
-if st.sidebar.button("🚀 Trigger Agent Cycle", use_container_width=True, type="primary"):
-    with st.spinner("Supervisor agent coordinating specialist workflows… please wait."):
-        res = trigger_agent_run()
+# Quick-access control: trigger a workflow cycle from any page.
+# Fewer cities = much faster (each city runs ~7 rate-limited LLM calls).
+num_cities = st.sidebar.slider("Cities to trade this cycle", 1, 20, 1,
+                               help="Start with 1 for a fast demo. 20 = full run (several minutes).")
+if st.sidebar.button(f"🚀 Trigger Agent Cycle ({num_cities} cities)", use_container_width=True, type="primary"):
+    with st.spinner(f"Agents trading {num_cities} city(ies)… weather → prediction → Kelly → execution."):
+        res = trigger_agent_run(max_cities=num_cities)
     if res and res.get("success"):
         st.sidebar.success(
             f"✅ Cycle complete — Trades: {res.get('trades_executed')}, "
@@ -267,16 +272,6 @@ if backend_live:
     # ----------------------------------------------------
     elif menu == "Prediction Markets":
         st.title("⚖️ Prediction Markets (Polymarket)")
-
-        market_src = get_data("/markets/source") or {}
-        if market_src.get("polymarket_live"):
-            st.success("🟢 Live Polymarket data — real market odds from the Gamma API.")
-        else:
-            st.warning(
-                "🟡 Polymarket is geoblocked from this network, so market **odds** are "
-                "simulated (anchored to real Open-Meteo forecasts). All weather, local-agency, "
-                "research and LLM data is real. Set `POLYMARKET_PROXY` (a VPN/proxy) for live odds."
-            )
 
         st.subheader("Active Weather Outcome Contracts")
         

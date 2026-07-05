@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
@@ -20,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 supervisor = SupervisorAgent()
 portfolio_manager = PortfolioManager()
+
+# Only one workflow cycle may run at a time — SQLite allows a single writer, so
+# concurrent cycles would collide. This guard makes overlapping triggers safe.
+_workflow_lock = asyncio.Lock()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -52,14 +57,26 @@ async def get_db_session():
         yield session
 
 @app.post("/run-workflow")
-async def trigger_workflow(session: AsyncSession = Depends(get_db_session)):
-    """Manually trigger one complete multi-agent prediction & trading cycle"""
-    try:
-        result = await supervisor.run_workflow(session)
-        return result
-    except Exception as e:
-        logger.error(f"Error running workflow: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+async def trigger_workflow(
+    max_cities: int | None = None,
+    session: AsyncSession = Depends(get_db_session),
+):
+    """
+    Manually trigger one multi-agent prediction & trading cycle.
+    Pass max_cities=N (e.g. 1) to trade only the first N cities for a quick demo.
+    """
+    if _workflow_lock.locked():
+        return {
+            "success": False,
+            "message": "A workflow cycle is already running. Please wait for it to finish.",
+        }
+    async with _workflow_lock:
+        try:
+            result = await supervisor.run_workflow(session, max_cities=max_cities)
+            return result
+        except Exception as e:
+            logger.error(f"Error running workflow: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/portfolio/state")
 async def get_portfolio_state(session: AsyncSession = Depends(get_db_session)):

@@ -78,16 +78,24 @@ class SupervisorAgent:
                 session.add(City(**c))
             await session.commit()
 
-    async def run_workflow(self, session: AsyncSession) -> Dict[str, Any]:
-        """Execute one complete cycle of the multi-agent trading system"""
-        logger.info("Supervisor Agent: Starting workflow cycle...")
-        
+    async def run_workflow(self, session: AsyncSession, max_cities: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Execute one complete cycle of the multi-agent trading system.
+
+        max_cities: if set, only the first N cities are traded this cycle (useful for a
+        quick demo). Settlement and portfolio valuation still cover all existing positions.
+        """
+        logger.info(f"Supervisor Agent: Starting workflow cycle... (max_cities={max_cities})")
+
         # 1. Seed and load cities
         await self.seed_cities(session)
         city_stmt = select(City)
         city_result = await session.execute(city_stmt)
         cities = city_result.scalars().all()
-        cities_list = [{"id": c.id, "name": c.name, "latitude": c.latitude, "longitude": c.longitude, "local_agency": c.local_agency} for c in cities]
+        # Limit which cities get NEW markets/predictions this cycle (settlement uses all).
+        trade_cities = cities[:max_cities] if max_cities else cities
+        trade_city_ids = {c.id for c in trade_cities}
+        cities_list = [{"id": c.id, "name": c.name, "latitude": c.latitude, "longitude": c.longitude, "local_agency": c.local_agency} for c in trade_cities]
         
         # 2. Settle expired markets first
         await self._settle_expired_contracts(session, cities)
@@ -152,7 +160,10 @@ class SupervisorAgent:
         m_stmt = select(Market).where(Market.is_active == True)
         m_result = await session.execute(m_stmt)
         active_db_markets = m_result.scalars().all()
-        
+
+        # Restrict the prediction/trade loop to the cities we're trading this cycle.
+        active_db_markets = [m for m in active_db_markets if m.city_id in trade_city_ids]
+
         # 5. Process each active market
         trades_executed = 0
         for market in active_db_markets:
