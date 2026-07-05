@@ -1,6 +1,7 @@
 import asyncio
+import itertools
 import logging
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 from openai import AsyncOpenAI
 from app.config.settings import settings
 
@@ -11,10 +12,27 @@ PLACEHOLDER_KEYS = {
     "", "mock_key",
     "your_openrouter_api_key", "your_openrouter_api_key_here",
     "your_groq_api_key", "your_groq_api_key_here",
+    "your_groq_api_key_fallback",
 }
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+def groq_keys() -> List[str]:
+    """All configured, non-placeholder Groq keys (primary first, then fallbacks)."""
+    candidates = [settings.groq_api_key, settings.groq_api_key_fallback]
+    seen, keys = set(), []
+    for k in candidates:
+        if k not in PLACEHOLDER_KEYS and k not in seen:
+            seen.add(k)
+            keys.append(k)
+    return keys
+
+
+# Round-robin cursor shared across agents so load is spread over all Groq keys,
+# roughly multiplying the free per-minute token budget by the number of keys.
+_groq_cursor = itertools.count()
 
 # Detect whether the Hermes Agent framework (Nous Research) is importable in this env.
 try:
@@ -33,13 +51,27 @@ def resolve_llm_config() -> Tuple[Optional[str], str, str, str]:
     Returns (api_key, base_url, model, provider_label). api_key is None when no
     real credentials are configured, signalling the deterministic fallback path.
     """
-    if settings.groq_api_key not in PLACEHOLDER_KEYS:
+    keys = groq_keys()
+    if keys:
         base_url = settings.llm_base_url or GROQ_BASE_URL
-        return settings.groq_api_key, base_url, settings.llm_model, "groq"
+        return keys[0], base_url, settings.llm_model, "groq"
     if settings.openrouter_api_key not in PLACEHOLDER_KEYS:
         base_url = settings.llm_base_url or OPENROUTER_BASE_URL
         return settings.openrouter_api_key, base_url, settings.llm_model, "openrouter"
     return None, OPENROUTER_BASE_URL, settings.llm_model, "none"
+
+
+def _agent_api_keys() -> List[str]:
+    """Ordered list of API keys to try for one logical call (rotation + failover)."""
+    keys = groq_keys()
+    if not keys:
+        if settings.openrouter_api_key not in PLACEHOLDER_KEYS:
+            return [settings.openrouter_api_key]
+        return []
+    # Round-robin the starting key so concurrent agents spread across all keys,
+    # then fall through to the remaining keys on rate-limit errors.
+    start = next(_groq_cursor) % len(keys)
+    return keys[start:] + keys[:start]
 
 
 def llm_configured() -> bool:
@@ -91,42 +123,59 @@ class BaseAgent:
             logger.info(f"Agent [{self.name}] using Hermes Agent framework via {self.provider}.")
 
     async def chat(self, prompt: str, system_prompt_override: Optional[str] = None) -> str:
-        """Query the reasoning backend with the agent persona and user prompt."""
+        """Query the reasoning backend, rotating across API keys on rate-limit errors."""
         sys_prompt = system_prompt_override or self.system_prompt
 
-        if not llm_configured():
+        keys = _agent_api_keys()
+        if not keys:
             return self._generate_fallback_response(prompt)
 
-        # 1. Preferred path: the Hermes Agent framework.
-        if hermes_active():
+        last_error: Optional[Exception] = None
+        for idx, key in enumerate(keys):
             try:
-                return await self._chat_hermes(prompt, sys_prompt)
+                if hermes_active():
+                    return await self._chat_hermes(prompt, sys_prompt, key)
+                return await self._chat_direct(prompt, sys_prompt, key)
             except Exception as e:
-                logger.error(f"Agent [{self.name}] Hermes query failed: {e}", exc_info=True)
-                # Fall through to the direct client path.
+                last_error = e
+                if self._is_rate_limit(e) and idx < len(keys) - 1:
+                    logger.warning(
+                        f"Agent [{self.name}] rate-limited on key #{idx + 1}; "
+                        f"failing over to key #{idx + 2}."
+                    )
+                    continue
+                logger.error(f"Agent [{self.name}] query failed: {e}", exc_info=True)
+                break
 
-        # 2. Direct OpenAI-compatible client (Groq / OpenRouter).
-        try:
-            logger.info(f"Agent [{self.name}] querying {self.provider} ({self.model})")
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.1,  # Low temperature for analytical quantitative reasoning
-                max_tokens=1500,
-            )
-            output = response.choices[0].message.content
-            logger.info(f"Agent [{self.name}] received response successfully.")
-            return output
-        except Exception as e:
-            logger.error(f"Agent [{self.name}] {self.provider} query failed: {e}", exc_info=True)
-            return self._generate_fallback_response(prompt, error=e)
+        return self._generate_fallback_response(prompt, error=last_error)
 
-    async def _chat_hermes(self, prompt: str, sys_prompt: str) -> str:
+    @staticmethod
+    def _is_rate_limit(error: Exception) -> bool:
+        """Detect an HTTP 429 / rate-limit error across SDK and Hermes error shapes."""
+        if error.__class__.__name__ == "RateLimitError":
+            return True
+        return "429" in str(error) or "rate_limit" in str(error).lower()
+
+    async def _chat_direct(self, prompt: str, sys_prompt: str, api_key: str) -> str:
+        """Direct OpenAI-compatible completion (Groq / OpenRouter) with the given key."""
+        logger.info(f"Agent [{self.name}] querying {self.provider} ({self.model})")
+        client = AsyncOpenAI(base_url=self.base_url, api_key=api_key)
+        response = await client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.1,  # Low temperature for analytical quantitative reasoning
+            max_tokens=1500,
+        )
+        output = response.choices[0].message.content
+        logger.info(f"Agent [{self.name}] received response successfully.")
+        return output
+
+    async def _chat_hermes(self, prompt: str, sys_prompt: str, api_key: str) -> str:
         """
-        Run a single-turn Hermes Agent completion.
+        Run a single-turn Hermes Agent completion with the given API key.
 
         Hermes' AIAgent.chat() is synchronous and must not be shared across concurrent
         calls, so a fresh instance is created per call and executed in a worker thread.
@@ -136,7 +185,7 @@ class BaseAgent:
         def _run() -> str:
             agent = _HermesAIAgent(
                 base_url=self.base_url,
-                api_key=self.api_key,
+                api_key=api_key,
                 provider="openai",
                 model=self.model,
                 quiet_mode=True,

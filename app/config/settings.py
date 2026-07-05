@@ -6,6 +6,8 @@ class Settings(BaseSettings):
     # LLM API credentials & provider configuration
     openrouter_api_key: str = Field(default="mock_key", validation_alias="OPENROUTER_API_KEY")
     groq_api_key: str = Field(default="", validation_alias="GROQ_API_KEY")
+    # Optional additional Groq keys for round-robin + rate-limit failover (doubles effective TPM).
+    groq_api_key_fallback: str = Field(default="", validation_alias="GROQ_API_KEY_FALLBACK")
     llm_model: str = Field(default="google/gemini-2.5-flash", validation_alias="LLM_MODEL")
     # Optional explicit overrides; when unset the provider is auto-selected (Groq > OpenRouter).
     llm_base_url: str = Field(default="", validation_alias="LLM_BASE_URL")
